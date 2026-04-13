@@ -6,38 +6,46 @@ const THREAD_COUNT = 4;
 const MAX_REGISTROS = 100;
 const NAME_SIZE = 50;
 
+// buffers compartilhados entre as threads
 const mutexBuffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
 const countBuffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
 const recordBuffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * MAX_REGISTROS * 2);
 const nameBuffer = new SharedArrayBuffer(Uint8Array.BYTES_PER_ELEMENT * MAX_REGISTROS * NAME_SIZE);
 
+// acesso dos buffers compartilhados
 const mutex = new Int32Array(mutexBuffer);
 const count = new Int32Array(countBuffer);
 const registros = new Int32Array(recordBuffer);
 const nomes = new Uint8Array(nameBuffer);
 
+// estruturas auxiliares do servidor
 const decoder = new TextDecoder();
 const queue = [];
 const workers = [];
 let nextTaskId = 1;
 let shutdownRequested = false;
 
+// retorna a posição base de um slot no array de registros
 function baseIndex(slot) {
   return slot * 2;
 }
 
+// retorna o deslocamento do nome no buffer de nomes
 function nameOffset(slot) {
   return slot * NAME_SIZE;
 }
 
+// verifica se um slot esta ativo
 function isActive(slot) {
   return registros[baseIndex(slot) + 1] === 1;
 }
 
+// retorna o id armazenado no slot
 function getId(slot) {
   return registros[baseIndex(slot)];
 }
 
+// Lê o nome armazenado em um slot
 function readName(slot) {
   const offset = nameOffset(slot);
   let end = offset;
@@ -49,6 +57,7 @@ function readName(slot) {
   return decoder.decode(nomes.slice(offset, end));
 }
 
+// monta a lista atual de registros ativos
 function listDatabase() {
   const rows = [];
 
@@ -64,6 +73,7 @@ function listDatabase() {
   return rows.sort((a, b) => a.id - b.id);
 }
 
+// mostra estado atual do banco
 function printDatabase() {
   const rows = listDatabase();
 
@@ -77,6 +87,7 @@ function printDatabase() {
   console.log('=================================\n');
 }
 
+// cria uma worker thread e configura seus eventos
 function createWorker(index) {
   const worker = new Worker(path.resolve(__dirname, 'worker.js'), {
     workerData: {
@@ -95,6 +106,7 @@ function createWorker(index) {
     busy: false
   };
 
+  // quando a thread termina uma tarefa
   worker.on('message', (message) => {
     entry.busy = false;
 
@@ -103,6 +115,7 @@ function createWorker(index) {
       `[${entry.name}] [Thread ${message.threadId}] [Tarefa ${message.taskId}] ${status} - ${message.message}`
     );
 
+    // após operações mostra o estado atual
     if (['INSERT', 'DELETE', 'UPDATE'].includes(findTaskOp(message.taskId))) {
       printDatabase();
     }
@@ -110,12 +123,14 @@ function createWorker(index) {
     dispatch();
   });
 
+  // trata erro da thread
   worker.on('error', (error) => {
     entry.busy = false;
     console.error(`[${entry.name}] erro:`, error);
     dispatch();
   });
 
+  // trata encerramento da thread
   worker.on('exit', (code) => {
     if (shutdownRequested) {
       return;
@@ -129,12 +144,15 @@ function createWorker(index) {
   workers.push(entry);
 }
 
+// salva histórico das tarefas enfileiradas
 const taskHistory = new Map();
 
+// busca a operação da tarefa pelo id
 function findTaskOp(taskId) {
   return taskHistory.get(taskId)?.op;
 }
 
+// distribui tarefas da fila para workers livres
 function dispatch() {
   for (const entry of workers) {
     if (entry.busy || queue.length === 0) {
@@ -149,10 +167,12 @@ function dispatch() {
   attemptShutdown();
 }
 
+// verifica se todas as threads estão livres
 function allWorkersIdle() {
   return workers.every((entry) => !entry.busy);
 }
 
+// encerra o servidor somente quando tudo terminar
 async function attemptShutdown() {
   if (!shutdownRequested) {
     return;
@@ -167,6 +187,7 @@ async function attemptShutdown() {
   process.exit(0);
 }
 
+// adiciona uma tarefa na fila
 function enqueueTask(task) {
   task.taskId = nextTaskId++;
   taskHistory.set(task.taskId, task);
@@ -176,6 +197,7 @@ function enqueueTask(task) {
   dispatch();
 }
 
+// converte o comando digitado em uma tarefa
 function parseCommand(line) {
   const text = line.trim();
   if (!text) {
@@ -227,6 +249,7 @@ function parseCommand(line) {
   throw new Error(`Comando inválido: ${op}`);
 }
 
+// valida os dados antes de enfileirar a tarefa
 function validateTask(task) {
   if (!['INSERT', 'DELETE', 'SELECT', 'UPDATE'].includes(task.op)) {
     return;
@@ -243,6 +266,7 @@ function validateTask(task) {
   }
 }
 
+// monta um conjunto pronto de tarefas para teste
 function runDemo() {
   const demoTasks = [
     { op: 'INSERT', id: 1, nome: 'Ana' },
@@ -260,6 +284,7 @@ function runDemo() {
   }
 }
 
+// mostra os comandos disponíveis
 function printHelp() {
   console.log(`
 Comandos disponíveis:
@@ -274,6 +299,7 @@ Comandos disponíveis:
 `);
 }
 
+// cria todas as threads do pool
 for (let i = 0; i < THREAD_COUNT; i++) {
   createWorker(i);
 }
@@ -282,6 +308,7 @@ console.log('Servidor iniciado com pool de threads.');
 console.log(`Threads ativas: ${THREAD_COUNT}`);
 printHelp();
 
+// interface para ler comandos digitados
 const rl = readline.createInterface({
   input: process.stdin,
   output: process.stdout,
@@ -290,6 +317,7 @@ const rl = readline.createInterface({
 
 rl.prompt();
 
+// trata cada linha digitada
 rl.on('line', (line) => {
   try {
     const task = parseCommand(line);
@@ -323,6 +351,7 @@ rl.on('line', (line) => {
   rl.prompt();
 });
 
+// espera as tarefas terminarem antes de encerrar
 rl.on('close', () => {
   shutdownRequested = true;
 
